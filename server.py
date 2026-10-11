@@ -59,12 +59,12 @@ def crop(path, quad, w_out=OW, h_out=OH):
     return cv2.warpPerspective(im, M, (w_out, h_out), flags=cv2.INTER_CUBIC)
 
 def export_json():
-    return {'format': 'whiteboard-cropper', 'version': 1,
+    return {'format': 'doccrop', 'version': 1,
             'note': 'quad = [TL,TR,BR,BL] as fractions (0-1) of image width/height; null = use auto default',
             'images': [{'path': o['path'], 'default': o.get('default'), 'quad': o.get('quad')} for o in STATE['images']]}
 
 def import_json(data):
-    if data.get('format') != 'whiteboard-cropper': raise ValueError('not a whiteboard-cropper export')
+    if data.get('format') not in ('doccrop', 'whiteboard-cropper'): raise ValueError('not a DocCrop export')
     idx = {o['path']: o for o in STATE['images']}
     added = updated = missing = 0
     with LOCK:
@@ -137,7 +137,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == '/api/job': return self.js({k: v for k, v in JOB.items() if k != 'started'})
         if u.path == '/api/export':
             return self.send(200, json.dumps(export_json(), indent=1).encode(), 'application/json',
-                             {'Content-Disposition': 'attachment; filename="whiteboard-cropper-export.json"'})
+                             {'Content-Disposition': 'attachment; filename="doccrop-export.json"'})
         if u.path.startswith('/img/'):
             o = find(u.path[5:]); return self.send(200, open(ensure_preview(o), 'rb').read(), 'image/jpeg') if o else self.send(404, b'', 'text/plain')
         if u.path.startswith('/full/'):

@@ -1,4 +1,4 @@
-# whiteboard-cropper
+# DocCrop
 
 Local web app for perspective-cropping a series of whiteboard photos so they line up for a timelapse.
 Original colors are preserved (no filter).
