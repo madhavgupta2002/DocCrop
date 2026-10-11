@@ -18,3 +18,7 @@ State is kept in `data/state.json`.
 `Add images…` opens the native macOS file dialog (multi-select) and adds the chosen photos by path.
 `Auto-crop new` registers photos that have no starting crop against the reference photo and maps the reference crop onto them;
 a progress dialog is shown. `Set as reference` makes the current photo (with its current crop) the reference.
+
+## Running the cropper
+`Run cropper` opens a dialog to type or browse (native folder dialog) for the output folder (remembered in `data/state.json`),
+then crops every photo from its full-resolution original (2400x1840, original colors) with a progress bar and Cancel button.

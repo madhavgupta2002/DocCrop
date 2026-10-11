@@ -133,7 +133,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path); q = parse_qs(u.query)
         if u.path == '/': return self.send(200, open(os.path.join(APP, 'index.html'), 'rb').read(), 'text/html')
-        if u.path == '/api/state': return self.js({'images': [item_json(o) for o in STATE['images']], 'settings': STATE.get('settings', {}), 'reference': STATE['reference']})
+        if u.path == '/api/state': return self.js({'images': [item_json(o) for o in STATE['images']], 'settings': {'out_dir': STATE.get('settings', {}).get('out_dir') or DEFAULT_OUT}, 'reference': STATE['reference']})
         if u.path == '/api/job': return self.js({k: v for k, v in JOB.items() if k != 'started'})
         if u.path == '/api/export':
             return self.send(200, json.dumps(export_json(), indent=1).encode(), 'application/json',
@@ -158,17 +158,37 @@ class H(BaseHTTPRequestHandler):
             if self.path == '/api/cancel': JOB['cancel'] = True; return self.js({})
             if self.path == '/api/reference':
                 o = find(body['id']); STATE['reference'] = {'path': o['path'], 'quad': o.get('quad') or o.get('default') or REF_QUAD}; save_state(); return self.js({})
-            if self.path == '/api/run': return self.js(run_all())
+            if self.path == '/api/run': run_all(body.get('out_dir') or STATE.get('settings', {}).get('out_dir') or DEFAULT_OUT); return self.js({})
+            if self.path == '/api/pickdir': return self.js({'path': pick_dir()})
         except Exception as e:
             return self.js({'error': str(e)}, 400)
         self.send(404, b'', 'text/plain')
 
-def run_all():
-    out = STATE.get('settings', {}).get('out_dir') or os.path.join(APP, 'corrected')
+DEFAULT_OUT = '/Users/gupmadha/Desktop/whiteboardf/corrected'
+
+def pick_dir():
+    r = subprocess.run(['osascript', '-e', 'POSIX path of (choose folder with prompt "Select output folder")'], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+def run_all(out):
+    out = os.path.abspath(os.path.expanduser(out))
     os.makedirs(out, exist_ok=True)
-    for o in STATE['images']:
-        cv2.imwrite(os.path.join(out, os.path.basename(o['path'])), crop(o['path'], o.get('quad') or o.get('default') or REF_QUAD), [cv2.IMWRITE_JPEG_QUALITY, 95])
-    return {'count': len(STATE['images']), 'dir': out}
+    STATE.setdefault('settings', {})['out_dir'] = out; save_state()
+    items = list(STATE['images'])
+    seen = {}
+    for o in items:  # disambiguate equal basenames from different folders
+        b = os.path.basename(o['path']); seen[b] = seen.get(b, 0) + 1
+    def fn():
+        for o in items:
+            if JOB['cancel']: break
+            b = os.path.basename(o['path']); JOB['current'] = b
+            name = b if seen[b] == 1 else f"{os.path.basename(os.path.dirname(o['path']))}_{b}"
+            try:
+                cv2.imwrite(os.path.join(out, name), crop(o['path'], o.get('quad') or o.get('default') or REF_QUAD), [cv2.IMWRITE_JPEG_QUALITY, 95])
+            except Exception as e: JOB['errors'].append(f'{b}: {e}')
+            JOB['done'] += 1
+        JOB['out_dir'] = out
+    start_job('run', len(items), fn)
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
