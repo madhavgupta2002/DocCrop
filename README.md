@@ -8,3 +8,8 @@ Original colors are preserved (no filter).
 Requires `opencv-python` and `numpy`.
 
 Keys: ←/→ previous/next photo, `0` free mode, `1`-`4` edit TL/TR/BR/BL with zoom, `+`/`-` zoom, `P` preview.
+
+## Export / import
+`Export` downloads a JSON with the absolute local image path and the 4 corner points (fractions of width/height, order TL,TR,BR,BL) per photo.
+`Import` merges such a file: known paths get their points updated, unknown paths that exist on disk are added.
+State is kept in `data/state.json`.
