@@ -11,6 +11,7 @@ button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd
 #wrap{flex:1;display:flex;min-height:0}
 #cv{background:#111;cursor:crosshair;flex:none}
 #pv{width:340px;border-left:1px solid #333;padding:8px;box-sizing:border-box}#pv img{width:100%}
+#ov{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center}#ov>div{background:#2a2a2a;padding:18px 22px;border-radius:8px;min-width:380px}#pb{height:10px;background:#444;border-radius:5px;overflow:hidden;margin:10px 0}#pbi{height:100%;width:0;background:#4caf50}
 </style>
 <div id=side></div>
 <div id=main>
@@ -21,7 +22,7 @@ button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd
   <button id=copy>Copy quad from previous</button>
   <button id=pvb>Preview crop (P)</button>
   <label><input type=checkbox id=onlyed> edited only</label>
-  <button id=exp>Export</button><button id=imp>Import</button><input type=file id=impf accept=.json style="display:none"><span style="flex:1"></span><button id=run>Run cropper → corrected/</button>
+  <button id=add>Add images…</button><button id=auto2>Auto-crop new</button><button id=setref title="Use this photo and its current crop as the reference for auto-crop">Set as reference</button><button id=exp>Export</button><button id=imp>Import</button><input type=file id=impf accept=.json style="display:none"><span style="flex:1"></span><button id=run>Run cropper → corrected/</button>
  </div>
  <div id=bar2>
   <b>Edit:</b>
@@ -32,6 +33,7 @@ button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd
  </div>
  <div id=wrap><canvas id=cv></canvas><div id=pv><div>Crop preview</div><img id=pvimg></div></div>
 </div>
+<div id=ov><div><b id=ovt></b><div id=pb><div id=pbi></div></div><div id=ovs></div><div style="margin-top:10px"><button id=ovc>Cancel</button> <button id=ovx style="display:none">Close</button></div></div></div>
 <script>
 let imgs=[],idx=0,im=new Image(),drag=-1,mode=-1,cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 const $=id=>document.getElementById(id);
@@ -40,7 +42,7 @@ function list(){const s=$('side');s.innerHTML='';imgs.forEach((o,i)=>{if($('only
 function src(i){return (mode>=0?'/full/':'/img/')+imgs[i].id}
 function show(i){idx=Math.max(0,Math.min(imgs.length-1,i));const n=new Image();n.onload=()=>{if(imgs[idx].id!==n.dataset.n)return;im=n;fit();draw();pv()};n.dataset.n=imgs[idx].id;n.src=src(idx);
  if(mode>=0&&idx+1<imgs.length){const p=new Image();p.src=src(idx+1)}
- $('title').textContent=`${idx+1}/${imgs.length}  ${imgs[idx].name}`;$('status').textContent=imgs[idx].edited?'(edited)':'(auto)';
+ $('title').textContent=`${idx+1}/${imgs.length}  ${imgs[idx].name}`;$('status').textContent=imgs[idx].edited?'(edited)':imgs[idx].auto?'(auto)':'(no auto-crop yet)';
  document.querySelectorAll('#side div').forEach(d=>d.classList.remove('sel'));const e=$('i'+idx);if(e){e.classList.add('sel');e.scrollIntoView({block:'nearest'})}}
 let sc=1,ox=0,oy=0,base=1;
 function fit(){const pr=cv.parentElement.getBoundingClientRect(),w=Math.floor(pr.width-342),h=Math.floor(pr.height);cv.style.width=w+'px';cv.style.height=h+'px';cv.width=w;cv.height=h;
@@ -67,6 +69,17 @@ $('prev').onclick=()=>show(idx-1);$('next').onclick=()=>show(idx+1);$('pvb').onc
 $('reset').onclick=async()=>{const o=imgs[idx];o.quad=JSON.parse(JSON.stringify(o.default));o.edited=false;await fetch('/api/save',{method:'POST',body:JSON.stringify({id:o.id,quad:null})});show(idx);list()};
 $('copy').onclick=async()=>{if(idx>0){imgs[idx].quad=JSON.parse(JSON.stringify(imgs[idx-1].quad));fit();draw();await save();pv()}};
 $('onlyed').onchange=list;
+async function post(u,b){return (await fetch(u,{method:'POST',body:JSON.stringify(b||{})})).json()}
+async function reload(){const cur=imgs[idx]&&imgs[idx].id;await load();const k=imgs.findIndex(o=>o.id===cur);if(k>=0)show(k)}
+async function watch(title){const ov=$('ov');ov.style.display='flex';$('ovt').textContent=title;$('ovx').style.display='none';$('ovc').style.display='';
+ for(;;){const j=await (await fetch('/api/job')).json();const pct=j.total?100*j.done/j.total:100;$('pbi').style.width=pct+'%';
+  $('ovs').textContent=`${j.done} / ${j.total}  ${j.current||''}`+(j.errors&&j.errors.length?`  (${j.errors.length} errors)`:'');
+  if(j.state!=='running'){$('ovs').textContent+=`  — ${j.state}`+(j.errors&&j.errors.length?'\n'+j.errors.slice(0,3).join('; '):'');$('ovc').style.display='none';$('ovx').style.display='';return j}
+  await new Promise(r=>setTimeout(r,400))}}
+$('ovc').onclick=()=>post('/api/cancel');$('ovx').onclick=()=>{$('ov').style.display='none'};
+$('add').onclick=async()=>{const r=await post('/api/pick');if(r.error)return alert(r.error);if(r.added){await reload();if(confirm(`Added ${r.added} photo(s). Run auto-crop on them now for a starting point?`))$('auto2').click()}};
+$('auto2').onclick=async()=>{const r=await post('/api/autocrop',{scope:'new'});if(r.error)return alert(r.error);await watch('Auto-cropping new photos…');await reload()};
+$('setref').onclick=async()=>{if(confirm(`Use ${imgs[idx].name} with its current crop as the reference for auto-crop?`))await post('/api/reference',{id:imgs[idx].id})};
 $('exp').onclick=()=>{location.href='/api/export'};
 $('imp').onclick=()=>$('impf').click();
 $('impf').onchange=async e=>{const f=e.target.files[0];if(!f)return;const r=await (await fetch('/api/import',{method:'POST',body:await f.text()})).json();e.target.value='';

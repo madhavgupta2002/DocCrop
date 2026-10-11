@@ -1,4 +1,6 @@
-import cv2, numpy as np, json, os, sys, glob, hashlib, threading
+import cv2, numpy as np, json, os, sys, glob, hashlib, threading, subprocess, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import align
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -26,6 +28,7 @@ def load_state():
     return migrate()
 
 STATE = load_state()
+STATE.setdefault('reference', {'path': '/Users/gupmadha/Desktop/whiteboardf/extracted/20260216_085334.jpg', 'quad': REF_QUAD})
 def save_state():
     os.makedirs(DATA, exist_ok=True)
     with LOCK: json.dump(STATE, open(STATE_F, 'w'))
@@ -39,7 +42,7 @@ def find(i):
 def item_json(o):
     return {'id': pid(o['path']), 'name': os.path.basename(o['path']), 'path': o['path'],
             'quad': o.get('quad') or o.get('default') or REF_QUAD, 'default': o.get('default') or REF_QUAD,
-            'edited': bool(o.get('quad')), 'missing': not os.path.exists(o['path'])}
+            'edited': bool(o.get('quad')), 'auto': bool(o.get('default')), 'missing': not os.path.exists(o['path'])}
 
 def ensure_preview(o):
     p = os.path.join(PREV, pid(o['path']) + '.jpg')
@@ -76,6 +79,50 @@ def import_json(data):
     save_state()
     return {'added': added, 'updated': updated, 'skipped_missing_files': missing}
 
+IMG_EXT = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff')
+JOB = {'state': 'idle'}
+
+def start_job(kind, total, fn):
+    with LOCK:
+        if JOB.get('state') == 'running': raise RuntimeError('another job is already running')
+        JOB.clear(); JOB.update({'kind': kind, 'state': 'running', 'total': total, 'done': 0, 'current': '', 'errors': [], 'started': time.time(), 'cancel': False})
+    def work():
+        try: fn()
+        except Exception as e: JOB['errors'].append(str(e))
+        finally: JOB['state'] = 'cancelled' if JOB.get('cancel') else 'done'
+    threading.Thread(target=work, daemon=True).start()
+
+def add_paths(paths):
+    have = {o['path'] for o in STATE['images']}; added = 0; skipped = 0
+    with LOCK:
+        for p in paths:
+            p = os.path.abspath(p)
+            if p in have or not p.lower().endswith(IMG_EXT) or not os.path.isfile(p): skipped += 1; continue
+            STATE['images'].append({'path': p}); have.add(p); added += 1
+        STATE['images'].sort(key=lambda o: o['path'])
+    save_state()
+    return {'added': added, 'skipped': skipped}
+
+def pick_files():
+    script = ['set fs to choose file with prompt "Select whiteboard photos" of type {"public.image"} with multiple selections allowed',
+              'set out to ""', 'repeat with f in fs', 'set out to out & POSIX path of f & linefeed', 'end repeat', 'return out']
+    r = subprocess.run(['osascript'] + [x for l in script for x in ('-e', l)], capture_output=True, text=True)
+    if r.returncode != 0: return []  # cancelled
+    return [l for l in r.stdout.splitlines() if l.strip()]
+
+def autocrop(scope):
+    ref = STATE['reference']
+    targets = [o for o in STATE['images'] if scope == 'all' or not o.get('default')]
+    al = align.Aligner(ref['path'], ref['quad'])
+    def fn():
+        for o in targets:
+            if JOB['cancel']: break
+            JOB['current'] = os.path.basename(o['path'])
+            try: o['default'], _ = al.quad_for(o['path'])
+            except Exception as e: JOB['errors'].append(f"{os.path.basename(o['path'])}: {e}")
+            JOB['done'] += 1; save_state()
+    start_job('autocrop', len(targets), fn)
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, body, ctype, extra=None):
@@ -86,7 +133,8 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path); q = parse_qs(u.query)
         if u.path == '/': return self.send(200, open(os.path.join(APP, 'index.html'), 'rb').read(), 'text/html')
-        if u.path == '/api/state': return self.js({'images': [item_json(o) for o in STATE['images']], 'settings': STATE.get('settings', {})})
+        if u.path == '/api/state': return self.js({'images': [item_json(o) for o in STATE['images']], 'settings': STATE.get('settings', {}), 'reference': STATE['reference']})
+        if u.path == '/api/job': return self.js({k: v for k, v in JOB.items() if k != 'started'})
         if u.path == '/api/export':
             return self.send(200, json.dumps(export_json(), indent=1).encode(), 'application/json',
                              {'Content-Disposition': 'attachment; filename="whiteboard-cropper-export.json"'})
@@ -104,6 +152,12 @@ class H(BaseHTTPRequestHandler):
             if self.path == '/api/save':
                 o = find(body['id']); o['quad'] = body.get('quad'); save_state(); return self.js({})
             if self.path == '/api/import': return self.js(import_json(body))
+            if self.path == '/api/pick': return self.js(add_paths(pick_files()))
+            if self.path == '/api/add': return self.js(add_paths(body['paths']))
+            if self.path == '/api/autocrop': autocrop(body.get('scope', 'new')); return self.js({})
+            if self.path == '/api/cancel': JOB['cancel'] = True; return self.js({})
+            if self.path == '/api/reference':
+                o = find(body['id']); STATE['reference'] = {'path': o['path'], 'quad': o.get('quad') or o.get('default') or REF_QUAD}; save_state(); return self.js({})
             if self.path == '/api/run': return self.js(run_all())
         except Exception as e:
             return self.js({'error': str(e)}, 400)
