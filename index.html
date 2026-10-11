@@ -21,7 +21,7 @@ button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd
   <button id=copy>Copy quad from previous</button>
   <button id=pvb>Preview crop (P)</button>
   <label><input type=checkbox id=onlyed> edited only</label>
-  <span style="flex:1"></span><button id=run>Run cropper → corrected/</button>
+  <button id=exp>Export</button><button id=imp>Import</button><input type=file id=impf accept=.json style="display:none"><span style="flex:1"></span><button id=run>Run cropper → corrected/</button>
  </div>
  <div id=bar2>
   <b>Edit:</b>
@@ -35,10 +35,10 @@ button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd
 <script>
 let imgs=[],idx=0,im=new Image(),drag=-1,mode=-1,cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 const $=id=>document.getElementById(id);
-async function load(){imgs=await (await fetch('/api/images')).json();list();show(0)}
+async function load(){imgs=(await (await fetch('/api/state')).json()).images;list();show(0)}
 function list(){const s=$('side');s.innerHTML='';imgs.forEach((o,i)=>{if($('onlyed').checked&&!o.edited)return;const d=document.createElement('div');d.textContent=o.name.replace('.jpg','');d.className=(i==idx?'sel ':'')+(o.edited?'ed':'');d.onclick=()=>show(i);d.id='i'+i;s.appendChild(d)})}
-function src(i){return (mode>=0?'/full/':'/img/')+imgs[i].name}
-function show(i){idx=Math.max(0,Math.min(imgs.length-1,i));const n=new Image();n.onload=()=>{if(imgs[idx].name!==n.dataset.n)return;im=n;fit();draw();pv()};n.dataset.n=imgs[idx].name;n.src=src(idx);
+function src(i){return (mode>=0?'/full/':'/img/')+imgs[i].id}
+function show(i){idx=Math.max(0,Math.min(imgs.length-1,i));const n=new Image();n.onload=()=>{if(imgs[idx].id!==n.dataset.n)return;im=n;fit();draw();pv()};n.dataset.n=imgs[idx].id;n.src=src(idx);
  if(mode>=0&&idx+1<imgs.length){const p=new Image();p.src=src(idx+1)}
  $('title').textContent=`${idx+1}/${imgs.length}  ${imgs[idx].name}`;$('status').textContent=imgs[idx].edited?'(edited)':'(auto)';
  document.querySelectorAll('#side div').forEach(d=>d.classList.remove('sel'));const e=$('i'+idx);if(e){e.classList.add('sel');e.scrollIntoView({block:'nearest'})}}
@@ -57,16 +57,20 @@ function pos(e){const r=cv.getBoundingClientRect(),x=(e.clientX-r.left)*cv.width
 cv.onmousedown=e=>{const p=pos(e),q=imgs[idx].quad;let b=mode;if(b<0){let bd=1e9;q.forEach((c,i)=>{const d=Math.hypot((c[0]-p[0])*im.width*sc,(c[1]-p[1])*im.height*sc);if(d<bd){bd=d;b=i}})}drag=b;q[b]=p;draw()};
 cv.onmousemove=e=>{if(drag<0)return;imgs[idx].quad[drag]=pos(e);draw()};
 window.onmouseup=async()=>{if(drag<0)return;drag=-1;await save();if(mode>=0&&$('auto').checked&&idx+1<imgs.length)show(idx+1);else{if(mode>=0)fit();draw();pv()}};
-async function save(){const o=imgs[idx];o.edited=true;await fetch('/api/save',{method:'POST',body:JSON.stringify({name:o.name,quad:o.quad})});$('status').textContent='(edited)';const e=$('i'+idx);if(e)e.classList.add('ed')}
-function pv(){$('pvimg').src='/api/preview?name='+encodeURIComponent(imgs[idx].name)+'&quad='+encodeURIComponent(JSON.stringify(imgs[idx].quad))+'&t='+Date.now()}
+async function save(){const o=imgs[idx];o.edited=true;await fetch('/api/save',{method:'POST',body:JSON.stringify({id:o.id,quad:o.quad})});$('status').textContent='(edited)';const e=$('i'+idx);if(e)e.classList.add('ed')}
+function pv(){$('pvimg').src='/api/preview?id='+imgs[idx].id+'&quad='+encodeURIComponent(JSON.stringify(imgs[idx].quad))+'&t='+Date.now()}
 function setMode(m){mode=m;document.querySelectorAll('.mb').forEach(b=>b.classList.toggle('on',+b.dataset.m===m));
  $('hint').textContent=m>=0?`Click the true ${NAMES[m]} corner — view is zoomed on it`:'Click anywhere: nearest dot jumps there';if(imgs.length)show(idx)}
 document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>setMode(+b.dataset.m));
 $('zoom').oninput=()=>{$('zv').textContent=$('zoom').value+'×';if(mode>=0){fit();draw()}};
 $('prev').onclick=()=>show(idx-1);$('next').onclick=()=>show(idx+1);$('pvb').onclick=pv;
-$('reset').onclick=async()=>{const o=imgs[idx];o.quad=JSON.parse(JSON.stringify(o.default));o.edited=false;await fetch('/api/save',{method:'POST',body:JSON.stringify({name:o.name,quad:null})});show(idx);list()};
+$('reset').onclick=async()=>{const o=imgs[idx];o.quad=JSON.parse(JSON.stringify(o.default));o.edited=false;await fetch('/api/save',{method:'POST',body:JSON.stringify({id:o.id,quad:null})});show(idx);list()};
 $('copy').onclick=async()=>{if(idx>0){imgs[idx].quad=JSON.parse(JSON.stringify(imgs[idx-1].quad));fit();draw();await save();pv()}};
 $('onlyed').onchange=list;
+$('exp').onclick=()=>{location.href='/api/export'};
+$('imp').onclick=()=>$('impf').click();
+$('impf').onchange=async e=>{const f=e.target.files[0];if(!f)return;const r=await (await fetch('/api/import',{method:'POST',body:await f.text()})).json();e.target.value='';
+ if(r.error){alert('Import failed: '+r.error);return}alert(`Imported: ${r.updated} updated, ${r.added} added, ${r.skipped_missing_files} skipped (file not found)`);const cur=imgs[idx]&&imgs[idx].id;await load();const k=imgs.findIndex(o=>o.id===cur);if(k>=0)show(k)};
 $('run').onclick=async()=>{$('run').textContent='Running…';const r=await (await fetch('/api/run',{method:'POST',body:'{}'})).json();$('run').textContent='Run cropper → corrected/';alert(`Wrote ${r.count} images to ${r.dir}`)};
 window.onkeydown=e=>{const k=e.key;if(k=='ArrowRight'||k=='ArrowDown'){e.preventDefault();show(idx+1)}else if(k=='ArrowLeft'||k=='ArrowUp'){e.preventDefault();show(idx-1)}
  else if(k=='p')pv();else if('01234'.includes(k)&&k.length==1)setMode(+k-1);
