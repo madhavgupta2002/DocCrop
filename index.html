@@ -33,11 +33,16 @@ button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd
  </div>
  <div id=wrap><canvas id=cv></canvas><div id=pv><div>Crop preview</div><img id=pvimg></div></div>
 </div>
+<div id=rd style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center"><div style="background:#2a2a2a;padding:18px 22px;border-radius:8px;width:520px">
+ <b>Run cropper</b><div style="margin:10px 0 4px">Output folder</div>
+ <div style="display:flex;gap:6px"><input id=outd style="flex:1;background:#1a1a1a;color:#ddd;border:1px solid #555;padding:5px"><button id=outb>Browse…</button></div>
+ <div style="margin-top:8px;color:#999" id=rdn></div>
+ <div style="margin-top:12px"><button id=rdgo class=on>Start</button> <button id=rdcl>Close</button></div></div></div>
 <div id=ov><div><b id=ovt></b><div id=pb><div id=pbi></div></div><div id=ovs></div><div style="margin-top:10px"><button id=ovc>Cancel</button> <button id=ovx style="display:none">Close</button></div></div></div>
 <script>
 let imgs=[],idx=0,im=new Image(),drag=-1,mode=-1,cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 const $=id=>document.getElementById(id);
-async function load(){imgs=(await (await fetch('/api/state')).json()).images;list();show(0)}
+async function load(){const st=await (await fetch('/api/state')).json();imgs=st.images;outDir=st.settings.out_dir;list();show(0)}
 function list(){const s=$('side');s.innerHTML='';imgs.forEach((o,i)=>{if($('onlyed').checked&&!o.edited)return;const d=document.createElement('div');d.textContent=o.name.replace('.jpg','');d.className=(i==idx?'sel ':'')+(o.edited?'ed':'');d.onclick=()=>show(i);d.id='i'+i;s.appendChild(d)})}
 function src(i){return (mode>=0?'/full/':'/img/')+imgs[i].id}
 function show(i){idx=Math.max(0,Math.min(imgs.length-1,i));const n=new Image();n.onload=()=>{if(imgs[idx].id!==n.dataset.n)return;im=n;fit();draw();pv()};n.dataset.n=imgs[idx].id;n.src=src(idx);
@@ -84,7 +89,11 @@ $('exp').onclick=()=>{location.href='/api/export'};
 $('imp').onclick=()=>$('impf').click();
 $('impf').onchange=async e=>{const f=e.target.files[0];if(!f)return;const r=await (await fetch('/api/import',{method:'POST',body:await f.text()})).json();e.target.value='';
  if(r.error){alert('Import failed: '+r.error);return}alert(`Imported: ${r.updated} updated, ${r.added} added, ${r.skipped_missing_files} skipped (file not found)`);const cur=imgs[idx]&&imgs[idx].id;await load();const k=imgs.findIndex(o=>o.id===cur);if(k>=0)show(k)};
-$('run').onclick=async()=>{$('run').textContent='Running…';const r=await (await fetch('/api/run',{method:'POST',body:'{}'})).json();$('run').textContent='Run cropper → corrected/';alert(`Wrote ${r.count} images to ${r.dir}`)};
+let outDir='';
+$('run').onclick=()=>{$('outd').value=outDir;$('rdn').textContent=`${imgs.length} photos will be cropped at full resolution with original colors.`;$('rd').style.display='flex'};
+$('rdcl').onclick=()=>{$('rd').style.display='none'};
+$('outb').onclick=async()=>{const r=await post('/api/pickdir');if(r.path)$('outd').value=r.path};
+$('rdgo').onclick=async()=>{const d=$('outd').value.trim();if(!d)return alert('Choose an output folder');$('rd').style.display='none';const r=await post('/api/run',{out_dir:d});if(r.error)return alert(r.error);outDir=d;const j=await watch('Cropping…');if(j.state==='done')$('ovs').textContent+=`\nSaved to ${j.out_dir}`};
 window.onkeydown=e=>{const k=e.key;if(k=='ArrowRight'||k=='ArrowDown'){e.preventDefault();show(idx+1)}else if(k=='ArrowLeft'||k=='ArrowUp'){e.preventDefault();show(idx-1)}
  else if(k=='p')pv();else if('01234'.includes(k)&&k.length==1)setMode(+k-1);
  else if(k=='+'||k=='='){$('zoom').value=+$('zoom').value+1;$('zoom').oninput()}else if(k=='-'){$('zoom').value=+$('zoom').value-1;$('zoom').oninput()}
