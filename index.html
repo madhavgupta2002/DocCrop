@@ -1,80 +1,120 @@
 <!doctype html><meta charset=utf-8><title>DocCrop</title>
 <style>
 body{margin:0;font:14px system-ui;background:#1e1e1e;color:#ddd;display:flex;height:100vh}
-#side{width:230px;overflow:auto;border-right:1px solid #333}
-#side div{padding:4px 8px;cursor:pointer;font-family:monospace;font-size:12px}
-#side div.sel{background:#2d5da8}#side div.ed{color:#7fdc7f}
+#side{width:200px;overflow:auto;border-right:1px solid #333}
+#side div{padding:3px 8px;cursor:pointer;font-family:monospace;font-size:12px;white-space:nowrap}
+#side div.pg{border-top:1px solid #333}
+#side div.sel{background:#2d5da8}#side div.fl{color:#ff8a65}#side div.ed{color:#ffd27f}#side div.dn{color:#7fdc7f}
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
 #bar,#bar2{padding:6px 8px;display:flex;gap:8px;align-items:center;border-bottom:1px solid #333;flex-wrap:wrap}
 button{background:#3a3a3a;color:#ddd;border:1px solid #555;padding:5px 10px;border-radius:4px;cursor:pointer}
-button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd8}#run{background:#2d7a2d}
+button:hover{background:#4a4a4a}button.on{background:#2d5da8;border-color:#5b8fd8}#run{background:#2d7a2d}#ok{background:#2d7a2d}
 #wrap{flex:1;display:flex;min-height:0}
 #cv{background:#111;cursor:crosshair;flex:none}
-#pv{width:340px;border-left:1px solid #333;padding:8px;box-sizing:border-box}#pv img{width:100%}
+#pv{width:340px;border-left:1px solid #333;padding:8px;box-sizing:border-box;overflow:auto}#pv img{max-width:100%;max-height:70vh}
 #ov{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center}#ov>div{background:#2a2a2a;padding:18px 22px;border-radius:8px;min-width:380px}#pb{height:10px;background:#444;border-radius:5px;overflow:hidden;margin:10px 0}#pbi{height:100%;width:0;background:#4caf50}
+#help{color:#999;font-size:12px;line-height:1.5;margin-top:10px}
 </style>
 <div id=side></div>
 <div id=main>
  <div id=bar>
   <button id=prev>◀ Prev</button><button id=next>Next ▶</button>
   <b id=title></b><span id=status></span>
+  <button id=ok title="Mark this print as checked and go to the next one">✓ OK → next (Enter)</button>
+  <button id=rot>Rotate ↻ (R)</button>
   <button id=reset>Reset to auto</button>
-  <button id=copy>Copy quad from previous</button>
-  <button id=pvb>Preview crop (P)</button>
-  <label><input type=checkbox id=onlyed> edited only</label>
-  <button id=add>Add images…</button><button id=auto2>Auto-crop new</button><button id=setref title="Use this photo and its current crop as the reference for auto-crop">Set as reference</button><button id=exp>Export</button><button id=imp>Import</button><input type=file id=impf accept=.json style="display:none"><span style="flex:1"></span><button id=run>Run cropper → corrected/</button>
+  <button id=addp title="Add another crop region on this photo (e.g. several prints on an album page)">+ Region (N)</button>
+  <button id=delp title="Delete this crop region">✕ Delete (X)</button>
+  <button id=ref1 title="Snap this region's corners onto the real print/document edges">Refine this (F)</button>
+  <button id=userough title="Replace with the corners from before the automatic refinement">Use old corners</button>
+  <label><input type=checkbox id=onlytodo> unchecked only</label><label><input type=checkbox id=onlyfl> ⚠ flagged only</label>
+  <span id=prog style="color:#9c9"></span>
+  <button id=add>Add images…</button><button id=refall title="Snap the corners of every region you haven't edited onto the real edges">Refine all unedited</button><button id=auto2 title="Photo series from the same spot: align new photos to the reference and copy its crop">Auto-crop new</button><button id=setref title="Use this photo and its current crop as the reference for auto-crop">Set as reference</button><button id=exp>Export</button><button id=imp>Import</button><input type=file id=impf accept=.json style="display:none"><span style="flex:1"></span><button id=run>Run cropper…</button>
  </div>
  <div id=bar2>
   <b>Edit:</b>
   <button data-m=-1 class=mb>Free (0)</button><button data-m=0 class=mb>TL (1)</button><button data-m=1 class=mb>TR (2)</button><button data-m=2 class=mb>BR (3)</button><button data-m=3 class=mb>BL (4)</button>
-  <label><input type=checkbox id=auto checked> auto-next on click</label>
+  <label><input type=checkbox id=auto checked> auto-advance corner on click</label>
   <label>Zoom <input type=range id=zoom min=1 max=20 step=0.5 value=6 style="vertical-align:middle"> <span id=zv>6×</span></label>
+  <label><input type=checkbox id=fpage checked> fit page</label>
   <span id=hint style="color:#999"></span>
  </div>
- <div id=wrap><canvas id=cv></canvas><div id=pv><div>Crop preview</div><img id=pvimg></div></div>
+ <div id=wrap><canvas id=cv></canvas><div id=pv><div>Crop preview</div><img id=pvimg>
+  <div id=help><b>Workflow</b><br>
+  Free mode: drag any corner dot. ←/→ (or ↑/↓) previous/next region. Alt+arrows nudge the last-used corner 1px (Alt+Shift = 10px).<br>
+  Keys 1–4: zoom onto TL/TR/BR/BL, click the true corner; it advances to the next corner, after BL it returns to free mode.<br>
+  Put corners on the <i>outer edge of the print paper</i> (include a white print border, exclude the sleeve/page).<br>
+  R rotates the output, Enter = OK &amp; next, N adds a region, X deletes, F refines this region.</div></div></div>
 </div>
 <div id=rd style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center"><div style="background:#2a2a2a;padding:18px 22px;border-radius:8px;width:520px">
- <b>Run cropper</b><div style="margin:10px 0 4px">Output folder</div>
+ <b>Run cropper</b><div style="margin:10px 0 4px">Output folder (one subfolder per source folder when photos come from several)</div>
  <div style="display:flex;gap:6px"><input id=outd style="flex:1;background:#1a1a1a;color:#ddd;border:1px solid #555;padding:5px"><button id=outb>Browse…</button></div>
+ <div style="margin-top:8px;display:flex;gap:14px;align-items:center"><label>Format <select id=fmt><option value=png>PNG (lossless)</option><option value=jpg>JPG 95</option></select></label>
+ <label>Size <input id=osz placeholder="natural" style="width:110px;background:#1a1a1a;color:#ddd;border:1px solid #555;padding:4px" title="blank = natural size of each crop; e.g. 2400x1840 = same size for all (timelapse)"></label></div>
+ <label style="display:block;margin-top:8px"><input type=checkbox id=onlydone> only regions marked ✓ OK</label>
  <div style="margin-top:8px;color:#999" id=rdn></div>
  <div style="margin-top:12px"><button id=rdgo class=on>Start</button> <button id=rdcl>Close</button></div></div></div>
-<div id=ov><div><b id=ovt></b><div id=pb><div id=pbi></div></div><div id=ovs></div><div style="margin-top:10px"><button id=ovc>Cancel</button> <button id=ovx style="display:none">Close</button></div></div></div>
+<div id=ov><div><b id=ovt></b><div id=pb><div id=pbi></div></div><div id=ovs style="white-space:pre-wrap"></div><div style="margin-top:10px"><button id=ovc>Cancel</button> <button id=ovx style="display:none">Close</button></div></div></div>
 <script>
-let imgs=[],idx=0,im=new Image(),drag=-1,mode=-1,cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+let imgs=[],idx=0,im=new Image(),drag=-1,mode=-1,cv=document.getElementById('cv'),ctx=cv.getContext('2d'),imKey='';
 const $=id=>document.getElementById(id);
-async function load(){const st=await (await fetch('/api/state')).json();imgs=st.images;outDir=st.settings.out_dir;list();show(0)}
-function list(){const s=$('side');s.innerHTML='';imgs.forEach((o,i)=>{if($('onlyed').checked&&!o.edited)return;const d=document.createElement('div');d.textContent=o.name.replace('.jpg','');d.className=(i==idx?'sel ':'')+(o.edited?'ed':'');d.onclick=()=>show(i);d.id='i'+i;s.appendChild(d)})}
-function src(i){return (mode>=0?'/full/':'/img/')+imgs[i].id}
-function show(i){idx=Math.max(0,Math.min(imgs.length-1,i));const n=new Image();n.onload=()=>{if(imgs[idx].id!==n.dataset.n)return;im=n;fit();draw();pv()};n.dataset.n=imgs[idx].id;n.src=src(idx);
+let outSize='',outFmt='png';
+async function load(){const st=await (await fetch('/api/state')).json();imgs=st.images;outDir=st.settings.out_dir;outSize=st.settings.out_size?st.settings.out_size.join('x'):'';outFmt=st.settings.out_fmt||'png';list();show(Math.min(idx,imgs.length-1))}
+function list(){const s=$('side');s.innerHTML='';let last='';imgs.forEach((o,i)=>{if($('onlytodo').checked&&o.done&&i!=idx)return;const d=document.createElement('div');d.textContent=o.name;
+ if($('onlyfl').checked&&!o.flag&&i!=idx)return;d.textContent=(o.flag&&!o.done&&!o.edited?'⚠ ':'')+o.name;
+ d.className=(o.page!==last?'pg ':'')+(i==idx?'sel ':'')+(o.done?'dn':o.edited?'ed':o.flag?'fl':'');last=o.page;d.onclick=()=>show(i);d.id='i'+i;s.appendChild(d)});progress()}
+function progress(){const n=imgs.filter(o=>o.done).length;$('prog').textContent=`${n}/${imgs.length} checked`}
+function src(i){return (mode>=0?'/full/':'/img/')+imgs[i].page}
+function show(i){if(!imgs.length)return;idx=Math.max(0,Math.min(imgs.length-1,i));const key=src(idx);
+ const after=()=>{fit();draw();pv()};
+ if(key===imKey&&im.complete)after();else{const n=new Image();n.onload=()=>{if(src(idx)!==key)return;im=n;imKey=key;after()};n.src=key}
  if(mode>=0&&idx+1<imgs.length){const p=new Image();p.src=src(idx+1)}
- $('title').textContent=`${idx+1}/${imgs.length}  ${imgs[idx].name}`;$('status').textContent=imgs[idx].edited?'(edited)':imgs[idx].auto?'(auto)':'(no auto-crop yet)';
+ const o=imgs[idx];$('title').textContent=`${idx+1}/${imgs.length}  ${o.name}`;$('status').textContent=(o.done?'(✓ checked)':o.edited?'(edited)':'(auto)')+(o.flag&&!o.done?'  ⚠ '+o.flag:'');$('status').style.color=o.flag&&!o.done?'#ff8a65':'';$('userough').style.display=o.rough?'':'none';
  document.querySelectorAll('#side div').forEach(d=>d.classList.remove('sel'));const e=$('i'+idx);if(e){e.classList.add('sel');e.scrollIntoView({block:'nearest'})}}
 let sc=1,ox=0,oy=0,base=1;
+function bbox(q){const xs=q.map(p=>p[0]),ys=q.map(p=>p[1]);return [Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]}
 function fit(){const pr=cv.parentElement.getBoundingClientRect(),w=Math.floor(pr.width-342),h=Math.floor(pr.height);cv.style.width=w+'px';cv.style.height=h+'px';cv.width=w;cv.height=h;
  base=Math.min(w/im.width,h/im.height);
  if(mode>=0){const c=imgs[idx].quad[mode];sc=base*$('zoom').value;ox=w/2-c[0]*im.width*sc;oy=h/2-c[1]*im.height*sc}
+ else if(!$('fpage').checked){const b=bbox(imgs[idx].quad),pad=0.06,bw=(b[2]-b[0]+2*pad)*im.width,bh=(b[3]-b[1]+2*pad)*im.height;sc=Math.min(w/bw,h/bh);
+  ox=w/2-(b[0]+b[2])/2*im.width*sc;oy=h/2-(b[1]+b[3])/2*im.height*sc}
  else{sc=base;ox=(w-im.width*sc)/2;oy=(h-im.height*sc)/2}}
 const P=p=>[ox+p[0]*im.width*sc,oy+p[1]*im.height*sc];
 const NAMES=['TL','TR','BR','BL'];
-function draw(){ctx.clearRect(0,0,cv.width,cv.height);ctx.drawImage(im,ox,oy,im.width*sc,im.height*sc);const q=imgs[idx].quad.map(P);
- ctx.strokeStyle='#ff3b3b';ctx.lineWidth=2;ctx.beginPath();q.forEach((p,i)=>i?ctx.lineTo(...p):ctx.moveTo(...p));ctx.closePath();ctx.stroke();
- q.forEach((p,i)=>{const act=i==mode;ctx.fillStyle=act?'#00e5ff':'#ffd400';ctx.beginPath();ctx.arc(p[0],p[1],act?9:7,0,7);ctx.fill();ctx.fillStyle='#000';ctx.font='10px sans-serif';ctx.fillText(NAMES[i],p[0]-6,p[1]+3)});
+function poly(q,col,lw,dash){ctx.setLineDash(dash||[]);ctx.strokeStyle=col;ctx.lineWidth=lw;ctx.beginPath();q.forEach((p,i)=>i?ctx.lineTo(...p):ctx.moveTo(...p));ctx.closePath();ctx.stroke();ctx.setLineDash([])}
+function draw(){ctx.clearRect(0,0,cv.width,cv.height);ctx.drawImage(im,ox,oy,im.width*sc,im.height*sc);const cur=imgs[idx];
+ imgs.forEach(o=>{if(o.page===cur.page&&o.id!==cur.id){const q=o.quad.map(P);poly(q,'rgba(120,200,255,.8)',1.5,[6,4]);const c=q.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4],[0,0]);ctx.fillStyle='rgba(120,200,255,.9)';ctx.font='bold 16px sans-serif';ctx.fillText(String.fromCharCode(97+o.n),c[0],c[1])}});
+ const q=cur.quad.map(P);poly(q,'#ff3b3b',mode>=0?1:2);
+ q.forEach((p,i)=>{const act=i==mode;ctx.fillStyle=act?'#00e5ff':'#ffd400';ctx.beginPath();ctx.arc(p[0],p[1],mode>=0?(act?4:3):7,0,7);ctx.fill();if(mode<0){ctx.fillStyle='#000';ctx.font='10px sans-serif';ctx.fillText(NAMES[i],p[0]-6,p[1]+3)}});
  if(mode>=0){ctx.strokeStyle='rgba(0,229,255,.35)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cv.width/2,0);ctx.lineTo(cv.width/2,cv.height);ctx.moveTo(0,cv.height/2);ctx.lineTo(cv.width,cv.height/2);ctx.stroke()}}
 function pos(e){const r=cv.getBoundingClientRect(),x=(e.clientX-r.left)*cv.width/r.width,y=(e.clientY-r.top)*cv.height/r.height;return [(x-ox)/(im.width*sc),(y-oy)/(im.height*sc)]}
-cv.onmousedown=e=>{const p=pos(e),q=imgs[idx].quad;let b=mode;if(b<0){let bd=1e9;q.forEach((c,i)=>{const d=Math.hypot((c[0]-p[0])*im.width*sc,(c[1]-p[1])*im.height*sc);if(d<bd){bd=d;b=i}})}drag=b;q[b]=p;draw()};
+let active=0;
+cv.onmousedown=e=>{const p=pos(e),q=imgs[idx].quad;let b=mode;if(b<0){let bd=1e9;q.forEach((c,i)=>{const d=Math.hypot((c[0]-p[0])*im.width*sc,(c[1]-p[1])*im.height*sc);if(d<bd){bd=d;b=i}})}drag=b;active=b;q[b]=p;draw()};
 cv.onmousemove=e=>{if(drag<0)return;imgs[idx].quad[drag]=pos(e);draw()};
-window.onmouseup=async()=>{if(drag<0)return;drag=-1;await save();if(mode>=0&&$('auto').checked&&idx+1<imgs.length)show(idx+1);else{if(mode>=0)fit();draw();pv()}};
-async function save(){const o=imgs[idx];o.edited=true;await fetch('/api/save',{method:'POST',body:JSON.stringify({id:o.id,quad:o.quad})});$('status').textContent='(edited)';const e=$('i'+idx);if(e)e.classList.add('ed')}
-function pv(){$('pvimg').src='/api/preview?id='+imgs[idx].id+'&quad='+encodeURIComponent(JSON.stringify(imgs[idx].quad))+'&t='+Date.now()}
-function setMode(m){mode=m;document.querySelectorAll('.mb').forEach(b=>b.classList.toggle('on',+b.dataset.m===m));
- $('hint').textContent=m>=0?`Click the true ${NAMES[m]} corner — view is zoomed on it`:'Click anywhere: nearest dot jumps there';if(imgs.length)show(idx)}
+window.onmouseup=async()=>{if(drag<0)return;drag=-1;await save();
+ if(mode>=0&&$('auto').checked){if(mode<3)setMode(mode+1);else setMode(-1)}else{if(mode>=0)fit();draw();pv()}};
+async function post(u,b){return (await fetch(u,{method:'POST',body:JSON.stringify(b||{})})).json()}
+async function save(extra){const o=imgs[idx];const b={id:o.id,...(extra||{})};if(!extra){o.edited=true;b.quad=o.quad}await post('/api/save',b);
+ const e=$('i'+idx);if(e){e.classList.toggle('dn',!!o.done);e.classList.toggle('ed',o.edited&&!o.done)}$('status').textContent=o.done?'(✓ checked)':o.edited?'(edited)':'(auto)';progress()}
+let pvT=0;function pv(){clearTimeout(pvT);pvT=setTimeout(()=>{const o=imgs[idx];$('pvimg').src='/api/preview?id='+o.id+'&rot='+o.rot+'&quad='+encodeURIComponent(JSON.stringify(o.quad))+'&t='+Date.now()},120)}
+function setMode(m){mode=m;document.querySelectorAll('.mb').forEach(b=>b.classList.toggle('on',+b.dataset.m===m));if(m>=0)active=m;
+ $('hint').textContent=m>=0?`Click the true ${NAMES[m]} corner of the print — view is zoomed on it`:'Drag the nearest dot; ←/→ change region; Alt+arrows nudge the last-used corner';if(imgs.length)show(idx)}
 document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>setMode(+b.dataset.m));
 $('zoom').oninput=()=>{$('zv').textContent=$('zoom').value+'×';if(mode>=0){fit();draw()}};
-$('prev').onclick=()=>show(idx-1);$('next').onclick=()=>show(idx+1);$('pvb').onclick=pv;
-$('reset').onclick=async()=>{const o=imgs[idx];o.quad=JSON.parse(JSON.stringify(o.default));o.edited=false;await fetch('/api/save',{method:'POST',body:JSON.stringify({id:o.id,quad:null})});show(idx);list()};
-$('copy').onclick=async()=>{if(idx>0){imgs[idx].quad=JSON.parse(JSON.stringify(imgs[idx-1].quad));fit();draw();await save();pv()}};
-$('onlyed').onchange=list;
-async function post(u,b){return (await fetch(u,{method:'POST',body:JSON.stringify(b||{})})).json()}
+$('fpage').onchange=()=>{fit();draw()};
+$('prev').onclick=()=>show(idx-1);$('next').onclick=()=>show(idx+1);
+$('ok').onclick=async()=>{const o=imgs[idx];o.done=true;o.flag=null;await save({done:true});if(mode>=0)setMode(-1);show(idx+1)};
+$('rot').onclick=async()=>{const o=imgs[idx];o.rot=(o.rot+90)%360;await save({rot:o.rot});pv()};
+$('reset').onclick=async()=>{const o=imgs[idx];o.quad=JSON.parse(JSON.stringify(o.default));o.edited=false;await post('/api/save',{id:o.id,quad:null});show(idx);list()};
+$('addp').onclick=async()=>{const r=await post('/api/addregion',{id:imgs[idx].id});await load();const k=imgs.findIndex(o=>o.id===r.id);if(k>=0){show(k);list()}};
+$('delp').onclick=async()=>{const o=imgs[idx];if(!confirm(`Delete region ${o.name}?`))return;await post('/api/delregion',{id:o.id});await load()};
+$('ref1').onclick=async()=>{const r=await post('/api/refine',{scope:'current',id:imgs[idx].id});if(r.error)return alert(r.error);await watch('Refining corners…');$('ov').style.display='none';await reload()};
+$('refall').onclick=async()=>{const n=imgs.filter(o=>!o.edited&&!o.done).length;if(!confirm(`Refine the corners of ${n} unedited region(s)? Your edited/checked regions are not touched; "Use old corners" can undo per region.`))return;
+ const r=await post('/api/refine',{scope:'unedited'});if(r.error)return alert(r.error);await watch('Refining corners…');await reload()};
+$('auto2').onclick=async()=>{const r=await post('/api/autocrop',{scope:'new'});if(r.error)return alert(r.error);await watch('Auto-cropping new photos…');await reload()};
+$('setref').onclick=async()=>{if(confirm(`Use ${imgs[idx].name} with its current crop as the reference for auto-crop?`))await post('/api/reference',{id:imgs[idx].id})};
+$('onlytodo').onchange=list;$('onlyfl').onchange=list;
+$('userough').onclick=async()=>{const o=imgs[idx];if(!o.rough)return;o.quad=JSON.parse(JSON.stringify(o.rough));o.edited=true;await post('/api/save',{id:o.id,use_rough:true});show(idx);list()};
 async function reload(){const cur=imgs[idx]&&imgs[idx].id;await load();const k=imgs.findIndex(o=>o.id===cur);if(k>=0)show(k)}
 async function watch(title){const ov=$('ov');ov.style.display='flex';$('ovt').textContent=title;$('ovx').style.display='none';$('ovc').style.display='';
  for(;;){const j=await (await fetch('/api/job')).json();const pct=j.total?100*j.done/j.total:100;$('pbi').style.width=pct+'%';
@@ -82,19 +122,25 @@ async function watch(title){const ov=$('ov');ov.style.display='flex';$('ovt').te
   if(j.state!=='running'){$('ovs').textContent+=`  — ${j.state}`+(j.errors&&j.errors.length?'\n'+j.errors.slice(0,3).join('; '):'');$('ovc').style.display='none';$('ovx').style.display='';return j}
   await new Promise(r=>setTimeout(r,400))}}
 $('ovc').onclick=()=>post('/api/cancel');$('ovx').onclick=()=>{$('ov').style.display='none'};
-$('add').onclick=async()=>{const r=await post('/api/pick');if(r.error)return alert(r.error);if(r.added){await reload();if(confirm(`Added ${r.added} photo(s). Run auto-crop on them now for a starting point?`))$('auto2').click()}};
-$('auto2').onclick=async()=>{const r=await post('/api/autocrop',{scope:'new'});if(r.error)return alert(r.error);await watch('Auto-cropping new photos…');await reload()};
-$('setref').onclick=async()=>{if(confirm(`Use ${imgs[idx].name} with its current crop as the reference for auto-crop?`))await post('/api/reference',{id:imgs[idx].id})};
+$('add').onclick=async()=>{const r=await post('/api/pick');if(r.error)return alert(r.error);if(r.added)await reload()};
 $('exp').onclick=()=>{location.href='/api/export'};
 $('imp').onclick=()=>$('impf').click();
 $('impf').onchange=async e=>{const f=e.target.files[0];if(!f)return;const r=await (await fetch('/api/import',{method:'POST',body:await f.text()})).json();e.target.value='';
- if(r.error){alert('Import failed: '+r.error);return}alert(`Imported: ${r.updated} updated, ${r.added} added, ${r.skipped_missing_files} skipped (file not found)`);const cur=imgs[idx]&&imgs[idx].id;await load();const k=imgs.findIndex(o=>o.id===cur);if(k>=0)show(k)};
+ if(r.error){alert('Import failed: '+r.error);return}alert(`Imported: ${r.updated} updated, ${r.added} added, ${r.skipped_missing_files} skipped (file not found)`);await reload()};
 let outDir='';
-$('run').onclick=()=>{$('outd').value=outDir;$('rdn').textContent=`${imgs.length} photos will be cropped at full resolution with original colors.`;$('rd').style.display='flex'};
+$('run').onclick=()=>{$('outd').value=outDir;$('osz').value=outSize;$('fmt').value=outFmt;$('rdn').textContent=`${imgs.length} regions (${imgs.filter(o=>o.done).length} checked) — full resolution, original colours.`;$('rd').style.display='flex'};
 $('rdcl').onclick=()=>{$('rd').style.display='none'};
 $('outb').onclick=async()=>{const r=await post('/api/pickdir');if(r.path)$('outd').value=r.path};
-$('rdgo').onclick=async()=>{const d=$('outd').value.trim();if(!d)return alert('Choose an output folder');$('rd').style.display='none';const r=await post('/api/run',{out_dir:d});if(r.error)return alert(r.error);outDir=d;const j=await watch('Cropping…');if(j.state==='done')$('ovs').textContent+=`\nSaved to ${j.out_dir}`};
-window.onkeydown=e=>{const k=e.key;if(k=='ArrowRight'||k=='ArrowDown'){e.preventDefault();show(idx+1)}else if(k=='ArrowLeft'||k=='ArrowUp'){e.preventDefault();show(idx-1)}
+$('rdgo').onclick=async()=>{const d=$('outd').value.trim();if(!d)return alert('Choose an output folder');$('rd').style.display='none';const r=await post('/api/run',{out_dir:d,only_done:$('onlydone').checked,size:$('osz').value.trim()||null,fmt:$('fmt').value});if(r.error)return alert(r.error);outDir=d;outSize=$('osz').value.trim();outFmt=$('fmt').value;const j=await watch('Cropping…');if(j.state==='done')$('ovs').textContent+=`\nSaved to ${j.out_dir}`};
+let nudgeT=0;
+window.onkeydown=e=>{const k=e.key,ae=document.activeElement;if(ae&&(ae.tagName==='INPUT'&&ae.type==='text'||ae.tagName==='SELECT'))return;
+ if(k.startsWith('Arrow')&&e.altKey){e.preventDefault();const o=imgs[idx],c=o.quad[mode>=0?mode:active],st=(e.shiftKey?10:1);
+  // nudge by one pixel of the displayed image (preview in free mode, full-res when zoomed on a corner)
+  c[0]+=(k=='ArrowLeft'?-st:k=='ArrowRight'?st:0)/im.naturalWidth;c[1]+=(k=='ArrowUp'?-st:k=='ArrowDown'?st:0)/im.naturalHeight;
+  draw();clearTimeout(nudgeT);nudgeT=setTimeout(()=>{save();pv()},300);return}
+ if(k=='ArrowRight'||k=='ArrowDown'){e.preventDefault();show(idx+1)}else if(k=='ArrowLeft'||k=='ArrowUp'){e.preventDefault();show(idx-1)}
+ else if(k=='Enter'){e.preventDefault();$('ok').click()}
+ else if(k=='r'||k=='R')$('rot').click();else if(k=='n'||k=='N')$('addp').click();else if(k=='x'||k=='X'||k=='Delete')$('delp').click();else if(k=='f'||k=='F')$('ref1').click();
  else if(k=='p')pv();else if('01234'.includes(k)&&k.length==1)setMode(+k-1);
  else if(k=='+'||k=='='){$('zoom').value=+$('zoom').value+1;$('zoom').oninput()}else if(k=='-'){$('zoom').value=+$('zoom').value-1;$('zoom').oninput()}
  if(document.activeElement&&document.activeElement.type!='range')document.activeElement.blur()};

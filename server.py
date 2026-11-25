@@ -1,86 +1,153 @@
-import cv2, numpy as np, json, os, sys, glob, hashlib, threading, subprocess, time
+import cv2, numpy as np, json, os, sys, glob, threading, subprocess, time, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import align
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+
+"""DocCrop - local web app for perspective-cropping photos.
+
+Every item is one crop region on one source photo: {path, n, default, quad, rot, done, flag}.
+  quad / default : [TL,TR,BR,BL] as fractions (0-1) of the photo width/height
+                   (quad = your manual corners, default = automatic starting point)
+  n              : index of the crop region on that photo (several prints per album page)
+  rot            : extra clockwise rotation of the output (0/90/180/270)
+
+Two ways to get starting corners:
+  * Auto-crop (align.py)  - photo series shot from the same spot (e.g. whiteboard timelapse):
+                            registers each photo to a reference and maps the reference crop.
+  * Refine corners (refine.py) - snaps rough corners onto the real print/document edges.
+"""
 
 APP = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(APP, 'data')
 PREV = os.path.join(DATA, 'previews')
 STATE_F = os.path.join(DATA, 'state.json')
-OW, OH = 2400, 1840
-REF_QUAD = (np.float32([[58, 50], [888, 42], [852, 672], [215, 690]]) * 4 / [4000, 3000]).tolist()
+DEFAULT_OUT = os.environ.get('DOCCROP_OUT', os.path.join(os.path.expanduser('~'), 'Desktop', 'DocCrop-output'))
+CENTER_QUAD = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
 LOCK = threading.RLock()
+IMG_EXT = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff')
+ROT = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
-def pid(path): return hashlib.sha1(path.encode()).hexdigest()[:12]
 
-def migrate():
-    """First run: build state from the legacy name-keyed files if present."""
-    src = os.environ.get('WB_SRC', '/Users/gupmadha/Desktop/whiteboardf/extracted')
+def pid(o): return hashlib.sha1(f"{o['path']}#{o.get('n', 0)}".encode()).hexdigest()[:12]
+def page_id(path): return hashlib.sha1(path.encode()).hexdigest()[:12]
+
+
+def migrate_legacy():
+    """First run: build state from the legacy name-keyed files (data/defaults.json, data/quads.json)."""
+    src = os.environ.get('WB_SRC')
     d = json.load(open(os.path.join(DATA, 'defaults.json'))) if os.path.exists(os.path.join(DATA, 'defaults.json')) else {}
     q = json.load(open(os.path.join(DATA, 'quads.json'))) if os.path.exists(os.path.join(DATA, 'quads.json')) else {}
-    imgs = [{'path': p, 'default': d.get(os.path.basename(p)), 'quad': q.get(os.path.basename(p))}
-            for p in sorted(glob.glob(os.path.join(src, '*.jpg')))]
+    imgs = [{'path': p, 'n': 0, 'default': d.get(os.path.basename(p)), 'quad': q.get(os.path.basename(p))}
+            for p in (sorted(glob.glob(os.path.join(src, '*.jpg'))) if src else [])]
     return {'images': imgs, 'settings': {}}
 
+
 def load_state():
-    if os.path.exists(STATE_F): return json.load(open(STATE_F))
-    return migrate()
+    st = json.load(open(STATE_F)) if os.path.exists(STATE_F) else migrate_legacy()
+    for o in st['images']:
+        o.setdefault('n', 0)  # v1 state had one crop per photo
+    st.setdefault('settings', {})
+    return st
+
 
 STATE = load_state()
-STATE.setdefault('reference', {'path': '/Users/gupmadha/Desktop/whiteboardf/extracted/20260216_085334.jpg', 'quad': REF_QUAD})
+
+
 def save_state():
     os.makedirs(DATA, exist_ok=True)
-    with LOCK: json.dump(STATE, open(STATE_F, 'w'))
-save_state()
+    with LOCK:
+        tmp = STATE_F + '.tmp'
+        json.dump(STATE, open(tmp, 'w')); os.replace(tmp, STATE_F)
+
+
+def sort_items(): STATE['images'].sort(key=lambda o: (o['path'], o['n']))
+
 
 def find(i):
     for o in STATE['images']:
-        if pid(o['path']) == i: return o
+        if pid(o) == i: return o
     return None
 
-def item_json(o):
-    return {'id': pid(o['path']), 'name': os.path.basename(o['path']), 'path': o['path'],
-            'quad': o.get('quad') or o.get('default') or REF_QUAD, 'default': o.get('default') or REF_QUAD,
-            'edited': bool(o.get('quad')), 'auto': bool(o.get('default')), 'missing': not os.path.exists(o['path'])}
 
-def ensure_preview(o):
-    p = os.path.join(PREV, pid(o['path']) + '.jpg')
+def find_page(pg):
+    for o in STATE['images']:
+        if page_id(o['path']) == pg: return o['path']
+    return None
+
+
+def multi(path): return sum(1 for o in STATE['images'] if o['path'] == path) > 1
+
+
+def label(o):
+    stem = os.path.splitext(os.path.basename(o['path']))[0]
+    return f"{os.path.basename(os.path.dirname(o['path']))} / {stem}" + (f" {chr(97 + o['n'])}" if multi(o['path']) or o['n'] else '')
+
+
+def item_json(o):
+    return {'id': pid(o), 'page': page_id(o['path']), 'name': label(o), 'path': o['path'], 'n': o['n'],
+            'quad': o.get('quad') or o.get('default') or CENTER_QUAD, 'default': o.get('default') or CENTER_QUAD,
+            'rot': o.get('rot', 0), 'edited': bool(o.get('quad')), 'auto': bool(o.get('default')),
+            'done': bool(o.get('done')), 'flag': o.get('flag'), 'rough': o.get('default_rough'),
+            'missing': not os.path.exists(o['path'])}
+
+
+CACHE = {'Cache-Control': 'max-age=86400'}
+
+
+def ensure_preview(path):
+    p = os.path.join(PREV, page_id(path) + '.jpg')
     if not os.path.exists(p):
         os.makedirs(PREV, exist_ok=True)
-        im = cv2.imread(o['path']); h, w = im.shape[:2]
-        cv2.imwrite(p, cv2.resize(im, (1600, int(1600 * h / w)), interpolation=cv2.INTER_AREA), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        im = cv2.imread(path); h, w = im.shape[:2]; s = 2000 / max(h, w)
+        cv2.imwrite(p, cv2.resize(im, (round(w * s), round(h * s)), interpolation=cv2.INTER_AREA), [cv2.IMWRITE_JPEG_QUALITY, 90])
     return p
 
-def crop(path, quad, w_out=OW, h_out=OH):
-    im = cv2.imread(path); h, w = im.shape[:2]
+
+def crop_img(im, quad, rot=0, size=None, max_side=None):
+    """Perspective-crop. size=(w,h) forces a fixed output size (timelapse); default = natural size."""
+    h, w = im.shape[:2]
     src = (np.float32(quad) * [w, h]).astype(np.float32)
-    M = cv2.getPerspectiveTransform(src, np.float32([[0, 0], [w_out, 0], [w_out, h_out], [0, h_out]]))
-    return cv2.warpPerspective(im, M, (w_out, h_out), flags=cv2.INTER_CUBIC)
+    if size:
+        wo, ho = size
+    else:
+        tl, tr, br, bl = src
+        wo = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
+        ho = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
+    if max_side:
+        f = min(1.0, max_side / max(wo, ho)); wo, ho = wo * f, ho * f
+    wo, ho = max(2, int(round(wo))), max(2, int(round(ho)))
+    M = cv2.getPerspectiveTransform(src, np.float32([[0, 0], [wo - 1, 0], [wo - 1, ho - 1], [0, ho - 1]]))
+    out = cv2.warpPerspective(im, M, (wo, ho), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
+    return cv2.rotate(out, ROT[rot]) if rot in ROT else out
+
 
 def export_json():
-    return {'format': 'doccrop', 'version': 1,
-            'note': 'quad = [TL,TR,BR,BL] as fractions (0-1) of image width/height; null = use auto default',
-            'images': [{'path': o['path'], 'default': o.get('default'), 'quad': o.get('quad')} for o in STATE['images']]}
+    return {'format': 'doccrop', 'version': 2,
+            'note': 'one entry per crop region; quad = [TL,TR,BR,BL] as fractions (0-1) of width/height; null = use default',
+            'images': [{'path': o['path'], 'n': o['n'], 'default': o.get('default'), 'quad': o.get('quad'), 'rot': o.get('rot', 0)}
+                       for o in STATE['images']]}
+
 
 def import_json(data):
     if data.get('format') not in ('doccrop', 'whiteboard-cropper'): raise ValueError('not a DocCrop export')
-    idx = {o['path']: o for o in STATE['images']}
+    idx = {(o['path'], o['n']): o for o in STATE['images']}
     added = updated = missing = 0
     with LOCK:
         for e in data.get('images', []):
-            o = idx.get(e['path'])
+            k = (e['path'], e.get('n', 0)); o = idx.get(k)
             if o is None:
                 if not os.path.exists(e['path']): missing += 1; continue
-                o = {'path': e['path']}; STATE['images'].append(o); idx[e['path']] = o; added += 1
+                o = {'path': e['path'], 'n': k[1]}; STATE['images'].append(o); idx[k] = o; added += 1
             else: updated += 1
             if e.get('default'): o['default'] = e['default']
-            o['quad'] = e.get('quad')
+            o['quad'] = e.get('quad'); o['rot'] = e.get('rot', 0)
+        sort_items()
     save_state()
     return {'added': added, 'updated': updated, 'skipped_missing_files': missing}
 
-IMG_EXT = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff')
+
 JOB = {'state': 'idle'}
+
 
 def start_job(kind, total, fn):
     with LOCK:
@@ -92,36 +159,144 @@ def start_job(kind, total, fn):
         finally: JOB['state'] = 'cancelled' if JOB.get('cancel') else 'done'
     threading.Thread(target=work, daemon=True).start()
 
+
 def add_paths(paths):
-    have = {o['path'] for o in STATE['images']}; added = 0; skipped = 0
+    have = {o['path'] for o in STATE['images']}; added = skipped = 0
     with LOCK:
         for p in paths:
             p = os.path.abspath(p)
             if p in have or not p.lower().endswith(IMG_EXT) or not os.path.isfile(p): skipped += 1; continue
-            STATE['images'].append({'path': p}); have.add(p); added += 1
-        STATE['images'].sort(key=lambda o: o['path'])
+            STATE['images'].append({'path': p, 'n': 0}); have.add(p); added += 1
+        sort_items()
     save_state()
     return {'added': added, 'skipped': skipped}
 
+
+def add_region(item_id):
+    o = find(item_id)
+    with LOCK:
+        n = 1 + max(x['n'] for x in STATE['images'] if x['path'] == o['path'])
+        new = {'path': o['path'], 'n': n, 'default': CENTER_QUAD, 'rot': 0}
+        STATE['images'].append(new); sort_items()
+    save_state()
+    return pid(new)
+
+
+def del_region(item_id):
+    o = find(item_id)
+    with LOCK:
+        STATE['images'].remove(o)
+        for k, x in enumerate(sorted([x for x in STATE['images'] if x['path'] == o['path']], key=lambda x: x['n'])):
+            x['n'] = k  # keep letters contiguous per photo
+        sort_items()
+    save_state()
+
+
 def pick_files():
-    script = ['set fs to choose file with prompt "Select whiteboard photos" of type {"public.image"} with multiple selections allowed',
+    script = ['set fs to choose file with prompt "Select photos" of type {"public.image"} with multiple selections allowed',
               'set out to ""', 'repeat with f in fs', 'set out to out & POSIX path of f & linefeed', 'end repeat', 'return out']
     r = subprocess.run(['osascript'] + [x for l in script for x in ('-e', l)], capture_output=True, text=True)
-    if r.returncode != 0: return []  # cancelled
-    return [l for l in r.stdout.splitlines() if l.strip()]
+    return [l for l in r.stdout.splitlines() if l.strip()] if r.returncode == 0 else []
 
+
+def pick_dir():
+    r = subprocess.run(['osascript', '-e', 'POSIX path of (choose folder with prompt "Select output folder")'], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+# ---------------------------------------------------------------- auto-crop (series aligned to a reference)
 def autocrop(scope):
-    ref = STATE['reference']
+    import align
+    ref = STATE.get('reference')
+    if not ref: raise RuntimeError('set a reference first (crop one photo, then "Set as reference")')
     targets = [o for o in STATE['images'] if scope == 'all' or not o.get('default')]
     al = align.Aligner(ref['path'], ref['quad'])
     def fn():
         for o in targets:
             if JOB['cancel']: break
-            JOB['current'] = os.path.basename(o['path'])
+            JOB['current'] = label(o)
             try: o['default'], _ = al.quad_for(o['path'])
-            except Exception as e: JOB['errors'].append(f"{os.path.basename(o['path'])}: {e}")
+            except Exception as e: JOB['errors'].append(f"{label(o)}: {e}")
             JOB['done'] += 1; save_state()
     start_job('autocrop', len(targets), fn)
+
+
+# ---------------------------------------------------------------- refine corners (snap to real edges)
+def refine(scope, item_id=None):
+    import refine as R
+    if scope == 'current':
+        targets = [find(item_id)]
+    else:  # every region you haven't edited or checked
+        targets = [o for o in STATE['images'] if not o.get('quad') and not o.get('done') and o.get('default')]
+    by_page = {}
+    for o in targets: by_page.setdefault(o['path'], []).append(o)
+    def fn():
+        for path, os_ in sorted(by_page.items()):
+            if JOB['cancel']: break
+            im = cv2.imread(path); h, w = im.shape[:2]
+            for o in os_:
+                JOB['current'] = label(o)
+                start = o.get('quad') or o.get('default') or CENTER_QUAD
+                q, flag = R.refine_quad(im, np.array(start, float) * [w, h])
+                qf = (q / [w, h]).round(5).tolist()
+                with LOCK:
+                    if scope == 'current':
+                        o['quad'] = qf
+                    else:
+                        o.setdefault('default_rough', o.get('default'))
+                        o['default'] = qf
+                    if flag: o['flag'] = flag
+                    else: o.pop('flag', None)
+                JOB['done'] += 1
+            save_state()
+    start_job('refine', len(targets), fn)
+
+
+# ---------------------------------------------------------------- run cropper
+def run_all(out, only_done=False, size=None, fmt='png'):
+    out = os.path.abspath(os.path.expanduser(out))
+    os.makedirs(out, exist_ok=True)
+    STATE['settings'].update({'out_dir': out, 'out_size': size, 'out_fmt': fmt}); save_state()
+    items = [o for o in STATE['images'] if not only_done or o.get('done')]
+    by_page = {}
+    for o in items: by_page.setdefault(o['path'], []).append(o)
+    folders = {os.path.dirname(p) for p in by_page}
+    def fn():
+        for path, os_ in sorted(by_page.items()):
+            if JOB['cancel']: break
+            im = cv2.imread(path)
+            sub = os.path.join(out, os.path.basename(os.path.dirname(path))) if len(folders) > 1 else out
+            os.makedirs(sub, exist_ok=True)
+            stem = os.path.splitext(os.path.basename(path))[0]
+            for o in os_:
+                JOB['current'] = label(o)
+                try:
+                    c = crop_img(im, o.get('quad') or o.get('default') or CENTER_QUAD, o.get('rot', 0), size)
+                    name = stem + (f"_{chr(97 + o['n'])}" if len(os_) > 1 or o['n'] else '')
+                    if fmt == 'jpg': cv2.imwrite(os.path.join(sub, name + '.jpg'), c, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                    else: cv2.imwrite(os.path.join(sub, name + '.png'), c, [cv2.IMWRITE_PNG_COMPRESSION, 6])
+                except Exception as e: JOB['errors'].append(f'{label(o)}: {e}')
+                JOB['done'] += 1
+        JOB['out_dir'] = out
+    start_job('run', len(items), fn)
+
+
+_page_cache = {}
+
+
+def page_img(path):
+    """tiny cache of decoded full-res photos for fast previews"""
+    if path not in _page_cache:
+        if len(_page_cache) > 3: _page_cache.pop(next(iter(_page_cache)))
+        _page_cache[path] = cv2.imread(path)
+    return _page_cache[path]
+
+
+def parse_size(s):
+    if not s: return None
+    w, h = str(s).lower().replace(' ', '').split('x')
+    return int(w), int(h)
+
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -133,63 +308,56 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path); q = parse_qs(u.query)
         if u.path == '/': return self.send(200, open(os.path.join(APP, 'index.html'), 'rb').read(), 'text/html')
-        if u.path == '/api/state': return self.js({'images': [item_json(o) for o in STATE['images']], 'settings': {'out_dir': STATE.get('settings', {}).get('out_dir') or DEFAULT_OUT}, 'reference': STATE['reference']})
+        if u.path == '/api/state':
+            s = STATE['settings']
+            return self.js({'images': [item_json(o) for o in STATE['images']], 'reference': STATE.get('reference'),
+                            'settings': {'out_dir': s.get('out_dir') or DEFAULT_OUT, 'out_size': s.get('out_size'), 'out_fmt': s.get('out_fmt') or 'png'}})
         if u.path == '/api/job': return self.js({k: v for k, v in JOB.items() if k != 'started'})
         if u.path == '/api/export':
             return self.send(200, json.dumps(export_json(), indent=1).encode(), 'application/json',
                              {'Content-Disposition': 'attachment; filename="doccrop-export.json"'})
         if u.path.startswith('/img/'):
-            o = find(u.path[5:]); return self.send(200, open(ensure_preview(o), 'rb').read(), 'image/jpeg') if o else self.send(404, b'', 'text/plain')
+            p = find_page(u.path[5:]); return self.send(200, open(ensure_preview(p), 'rb').read(), 'image/jpeg', CACHE) if p else self.send(404, b'', 'text/plain')
         if u.path.startswith('/full/'):
-            o = find(u.path[6:]); return self.send(200, open(o['path'], 'rb').read(), 'image/jpeg') if o else self.send(404, b'', 'text/plain')
+            p = find_page(u.path[6:]); return self.send(200, open(p, 'rb').read(), 'image/jpeg', CACHE) if p else self.send(404, b'', 'text/plain')
         if u.path == '/api/preview':
-            o = find(q['id'][0]); ok, buf = cv2.imencode('.jpg', crop(o['path'], json.loads(q['quad'][0]), 900, 690), [cv2.IMWRITE_JPEG_QUALITY, 90])
+            o = find(q['id'][0])
+            c = crop_img(page_img(o['path']), json.loads(q['quad'][0]), int(q.get('rot', ['0'])[0]), parse_size(STATE['settings'].get('out_size')), max_side=900)
+            ok, buf = cv2.imencode('.jpg', c, [cv2.IMWRITE_JPEG_QUALITY, 90])
             return self.send(200, buf.tobytes(), 'image/jpeg')
         self.send(404, b'not found', 'text/plain')
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}')
         try:
             if self.path == '/api/save':
-                o = find(body['id']); o['quad'] = body.get('quad'); save_state(); return self.js({})
+                o = find(body['id'])
+                if 'quad' in body: o['quad'] = body.get('quad')
+                if 'rot' in body: o['rot'] = int(body['rot']) % 360
+                if 'done' in body: o['done'] = bool(body['done'])
+                if body.get('use_rough') and o.get('default_rough'): o['quad'] = o['default_rough']
+                save_state(); return self.js({})
             if self.path == '/api/import': return self.js(import_json(body))
             if self.path == '/api/pick': return self.js(add_paths(pick_files()))
             if self.path == '/api/add': return self.js(add_paths(body['paths']))
+            if self.path == '/api/addregion': return self.js({'id': add_region(body['id'])})
+            if self.path == '/api/delregion': del_region(body['id']); return self.js({})
             if self.path == '/api/autocrop': autocrop(body.get('scope', 'new')); return self.js({})
+            if self.path == '/api/refine': refine(body.get('scope', 'unedited'), body.get('id')); return self.js({})
             if self.path == '/api/cancel': JOB['cancel'] = True; return self.js({})
             if self.path == '/api/reference':
-                o = find(body['id']); STATE['reference'] = {'path': o['path'], 'quad': o.get('quad') or o.get('default') or REF_QUAD}; save_state(); return self.js({})
-            if self.path == '/api/run': run_all(body.get('out_dir') or STATE.get('settings', {}).get('out_dir') or DEFAULT_OUT); return self.js({})
+                o = find(body['id']); STATE['reference'] = {'path': o['path'], 'quad': o.get('quad') or o.get('default') or CENTER_QUAD}
+                save_state(); return self.js({})
+            if self.path == '/api/run':
+                run_all(body.get('out_dir') or STATE['settings'].get('out_dir') or DEFAULT_OUT, body.get('only_done', False),
+                        parse_size(body.get('size')), body.get('fmt', 'png'))
+                return self.js({})
             if self.path == '/api/pickdir': return self.js({'path': pick_dir()})
         except Exception as e:
             return self.js({'error': str(e)}, 400)
         self.send(404, b'', 'text/plain')
 
-DEFAULT_OUT = '/Users/gupmadha/Desktop/whiteboardf/corrected'
-
-def pick_dir():
-    r = subprocess.run(['osascript', '-e', 'POSIX path of (choose folder with prompt "Select output folder")'], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else None
-
-def run_all(out):
-    out = os.path.abspath(os.path.expanduser(out))
-    os.makedirs(out, exist_ok=True)
-    STATE.setdefault('settings', {})['out_dir'] = out; save_state()
-    items = list(STATE['images'])
-    seen = {}
-    for o in items:  # disambiguate equal basenames from different folders
-        b = os.path.basename(o['path']); seen[b] = seen.get(b, 0) + 1
-    def fn():
-        for o in items:
-            if JOB['cancel']: break
-            b = os.path.basename(o['path']); JOB['current'] = b
-            name = b if seen[b] == 1 else f"{os.path.basename(os.path.dirname(o['path']))}_{b}"
-            try:
-                cv2.imwrite(os.path.join(out, name), crop(o['path'], o.get('quad') or o.get('default') or REF_QUAD), [cv2.IMWRITE_JPEG_QUALITY, 95])
-            except Exception as e: JOB['errors'].append(f'{b}: {e}')
-            JOB['done'] += 1
-        JOB['out_dir'] = out
-    start_job('run', len(items), fn)
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    print(f'http://localhost:{port}'); ThreadingHTTPServer(('127.0.0.1', port), H).serve_forever()
+    print(f'http://localhost:{port}', flush=True)
+    ThreadingHTTPServer(('127.0.0.1', port), H).serve_forever()
